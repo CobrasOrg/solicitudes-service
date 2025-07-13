@@ -1,11 +1,14 @@
-app = "solicitudes-staging"
+app = "solicitudes-service"
 primary_region = "bog"
 
 [build]
 
 [env]
   PORT = "8000"
-  APP_ENV = "staging"
+  APP_ENV = "production"
+  DEBUG = "false"
+  HOST = "0.0.0.0"
+  BASE_URL = "https://solicitudes-service.fly.dev"
 
 [http_service]
   internal_port = 8000
