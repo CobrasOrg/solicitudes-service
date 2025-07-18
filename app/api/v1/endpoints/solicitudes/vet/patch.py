@@ -4,6 +4,7 @@ from app.schemas.solicitud import SolicitudUpdate, SolicitudEstadoUpdate, Solici
 from app.schemas.auth import AuthenticatedUser
 from app.models.solicitud_mongo import SolicitudMongoModel
 from app.api.dependencies import get_current_user_clinic
+from pydantic import ValidationError
 
 from app.constants.solicitudes import ESTADOS_PERMITIDOS
 import json
@@ -15,8 +16,8 @@ router = APIRouter()
 @router.patch(
     "/{solicitud_id}",
     response_model=Solicitud,
-    summary="Actualizar solicitud (JSON o Formulario)",
-    description="Actualiza los datos de una solicitud existente. Acepta tanto JSON como datos de formulario. Solo se actualizan los campos enviados. Endpoint exclusivo para veterinarias.",
+    summary="Actualizar mi solicitud (JSON o Formulario)",
+    description="Actualiza los datos de una solicitud existente que pertenece al usuario autenticado. Acepta tanto JSON como datos de formulario. Solo se actualizan los campos enviados. Endpoint exclusivo para veterinarias.",
     responses={
         200: {
             "description": "Solicitud actualizada exitosamente",
@@ -58,6 +59,14 @@ router = APIRouter()
                 }
             }
         },
+        422: {
+            "description": "Error de validación",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Error de validación en los datos de la solicitud"}
+                }
+            }
+        },
         500: {
             "description": "Error interno del servidor",
             "content": {
@@ -81,62 +90,74 @@ async def update_solicitud(
     estado: Optional[str] = Form(None, description="Nuevo estado de la solicitud"),
     foto_mascota: Optional[UploadFile] = File(None, description="Nueva imagen de la mascota (opcional)")
 ):
+    solicitud_actual = await SolicitudMongoModel.get_solicitud_by_id_and_owner(solicitud_id, current_user.id)
+    if not solicitud_actual:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    update_data = {}
+    if especie is not None and especie != "":
+        update_data["especie"] = especie
+    if tipo_sangre is not None and tipo_sangre != "":
+        update_data["tipo_sangre"] = tipo_sangre
+    if urgencia is not None and urgencia != "":
+        update_data["urgencia"] = urgencia
+    if peso_minimo is not None and peso_minimo != "":
+        if isinstance(peso_minimo, str):
+            try:
+                peso_minimo = float(peso_minimo)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="peso_minimo debe ser un número válido")
+        update_data["peso_minimo"] = peso_minimo
+    if descripcion_solicitud is not None and descripcion_solicitud != "":
+        update_data["descripcion_solicitud"] = descripcion_solicitud
+    if direccion is not None and direccion != "":
+        update_data["direccion"] = direccion
+    if estado is not None and estado != "":
+        update_data["estado"] = estado
+    if foto_mascota:
+        if solicitud_actual.foto_mascota:
+            try:
+                url = solicitud_actual.foto_mascota
+                public_id = url.split("/petmatch-solicitudes/")[-1].split(".")[0]
+                cloudinary.uploader.destroy(f"petmatch-solicitudes/{public_id}")
+            except Exception as e:
+                print(f"Error eliminando imagen de Cloudinary: {str(e)}")
+        nueva_foto_url = upload_image(foto_mascota.file, public_id=solicitud_id)
+        if nueva_foto_url:
+            update_data["foto_mascota"] = nueva_foto_url
+    if not update_data:
+        return solicitud_actual
+    
+    # Validar los datos de actualización usando Pydantic
     try:
-        solicitud_actual = await SolicitudMongoModel.get_solicitud_by_id(solicitud_id)
-        if not solicitud_actual:
-            raise HTTPException(status_code=404, detail="Solicitud no encontrada")
-        update_data = {}
-        if especie is not None and especie != "":
-            update_data["especie"] = especie
-        if tipo_sangre is not None and tipo_sangre != "":
-            update_data["tipo_sangre"] = tipo_sangre
-        if urgencia is not None and urgencia != "":
-            update_data["urgencia"] = urgencia
-        if peso_minimo is not None and peso_minimo != "":
-            if isinstance(peso_minimo, str):
-                try:
-                    peso_minimo = float(peso_minimo)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="peso_minimo debe ser un número válido")
-            update_data["peso_minimo"] = peso_minimo
-        if descripcion_solicitud is not None and descripcion_solicitud != "":
-            update_data["descripcion_solicitud"] = descripcion_solicitud
-        if direccion is not None and direccion != "":
-            update_data["direccion"] = direccion
-        if estado is not None and estado != "":
-            update_data["estado"] = estado
-        if foto_mascota:
-            if solicitud_actual.foto_mascota:
-                try:
-                    url = solicitud_actual.foto_mascota
-                    public_id = url.split("/petmatch-solicitudes/")[-1].split(".")[0]
-                    cloudinary.uploader.destroy(f"petmatch-solicitudes/{public_id}")
-                except Exception as e:
-                    print(f"Error eliminando imagen de Cloudinary: {str(e)}")
-            nueva_foto_url = upload_image(foto_mascota.file, public_id=solicitud_id)
-            if nueva_foto_url:
-                update_data["foto_mascota"] = nueva_foto_url
-        if not update_data:
-            return solicitud_actual
         solicitud_update = SolicitudUpdate(**update_data)
-        solicitud_actualizada = await SolicitudMongoModel.update_solicitud_datos(solicitud_id, solicitud_update)
-        if not solicitud_actualizada:
-            raise HTTPException(status_code=404, detail="Solicitud no encontrada")
-        return solicitud_actualizada
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Error interno del servidor al procesar la solicitud")
+    except ValidationError as e:
+        # Convertir errores de validación de Pydantic a errores HTTP 422
+        error_details = []
+        for error in e.errors():
+            field = error['loc'][0] if error['loc'] else 'unknown'
+            message = error['msg']
+            error_details.append(f"{field}: {message}")
+        
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Error de validación en los datos de actualización",
+                "errors": error_details
+            }
+        )
+    
+    solicitud_actualizada = await SolicitudMongoModel.update_solicitud_datos(solicitud_id, solicitud_update)
+    if not solicitud_actualizada:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    return solicitud_actualizada
 
 
 
 @router.patch(
     "/{solicitud_id}/estado",
     response_model=Solicitud,
-    summary="Actualizar estado de solicitud",
-    description="Actualiza el estado de una solicitud existente. Endpoint exclusivo para veterinarias.",
+    summary="Actualizar estado de mi solicitud",
+    description="Actualiza el estado de una solicitud existente que pertenece al usuario autenticado. Endpoint exclusivo para veterinarias.",
     responses={
         200: {
             "description": "Estado de la solicitud actualizado exitosamente",
@@ -178,6 +199,14 @@ async def update_solicitud(
                 }
             }
         },
+        422: {
+            "description": "Error de validación",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Error de validación en el estado de la solicitud"}
+                }
+            }
+        },
         500: {
             "description": "Error interno del servidor",
             "content": {
@@ -210,11 +239,31 @@ async def update_solicitud_estado(
     try:
         print(f"[DEBUG] update_solicitud_estado endpoint: ID={solicitud_id}, estado={estado_update.estado}")
         
-        # Validar que el estado sea válido
-        if estado_update.estado not in ESTADOS_PERMITIDOS:
+        # Validar que el estado sea válido usando Pydantic
+        try:
+            # La validación ya se hace automáticamente por Pydantic, pero podemos manejarla explícitamente
+            if estado_update.estado not in ESTADOS_PERMITIDOS:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Error de validación en el estado de la solicitud",
+                        "errors": [f"estado: Estado inválido. Los estados válidos son: {', '.join(ESTADOS_PERMITIDOS)}"]
+                    }
+                )
+        except ValidationError as e:
+            # Convertir errores de validación de Pydantic a errores HTTP 422
+            error_details = []
+            for error in e.errors():
+                field = error['loc'][0] if error['loc'] else 'unknown'
+                message = error['msg']
+                error_details.append(f"{field}: {message}")
+            
             raise HTTPException(
-                status_code=400,
-                detail=f"Estado inválido. Los estados válidos son: {', '.join(ESTADOS_PERMITIDOS)}"
+                status_code=422,
+                detail={
+                    "message": "Error de validación en el estado de la solicitud",
+                    "errors": error_details
+                }
             )
         
         # Verificar que la solicitud existe antes de actualizar

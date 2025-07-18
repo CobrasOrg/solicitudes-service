@@ -27,13 +27,14 @@ async def lifespan(app: FastAPI):
 
 app.router.lifespan_context = lifespan
 
-# CORS
+# CORS - Configuración más específica
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Include routers

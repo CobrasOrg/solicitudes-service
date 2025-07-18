@@ -11,8 +11,8 @@ router = APIRouter()
 @router.get(
     "/",
     response_model=List[Solicitud],
-    summary="Obtener todas las solicitudes (Veterinaria)",
-    description="Retorna todas las solicitudes independientemente de su estado. Endpoint exclusivo para veterinarias.",
+    summary="Obtener mis solicitudes (Veterinaria)",
+    description="Retorna todas las solicitudes del usuario autenticado independientemente de su estado. Endpoint exclusivo para veterinarias.",
     responses={
         200: {
             "description": "Lista de todas las solicitudes",
@@ -54,29 +54,22 @@ async def get_all_solicitudes(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user_clinic)]
 ):
     """
-    Obtiene todas las solicitudes independientemente de su estado.
+    Obtiene todas las solicitudes del usuario autenticado independientemente de su estado.
     Endpoint exclusivo para veterinarias.
     
     Returns:
-        List[Solicitud]: Lista de todas las solicitudes
+        List[Solicitud]: Lista de todas las solicitudes del usuario autenticado
         
     Raises:
         HTTPException: Si ocurre un error al procesar la solicitud
     """
-    try:
-        return await SolicitudMongoModel.get_all_solicitudes()
-    except Exception as e:
-        print(f"Error en get_all_solicitudes: {str(e)}")  # Para debugging
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al obtener las solicitudes: {str(e)}"
-        )
+    return await SolicitudMongoModel.get_solicitudes_by_owner(current_user.id)
 
 @router.get(
     "/filtrar",
     response_model=List[Solicitud],
-    summary="Filtrar solicitudes por estado (Veterinaria)",
-    description="Retorna las solicitudes filtradas por estado. Endpoint exclusivo para veterinarias.",
+    summary="Filtrar mis solicitudes por estado (Veterinaria)",
+    description="Retorna las solicitudes del usuario autenticado filtradas por estado. Endpoint exclusivo para veterinarias.",
     responses={
         200: {
             "description": "Lista de solicitudes filtradas",
@@ -104,11 +97,11 @@ async def get_all_solicitudes(
                 }
             }
         },
-        400: {
-            "description": "Estado inválido",
+        422: {
+            "description": "Error de validación en los parámetros de filtro",
             "content": {
                 "application/json": {
-                    "example": {"detail": f"Estado inválido. Los estados válidos son: {', '.join(ESTADOS_PERMITIDOS)}"}
+                    "example": {"detail": "Error de validación en los parámetros de filtro"}
                 }
             }
         },
@@ -173,41 +166,45 @@ async def get_solicitudes_by_status(
         - Filtrar por múltiples localidades: ?estado=Activa&localidad=Suba,Teusaquillo
         - Filtrar por múltiples criterios: ?estado=Activa&especie=Perro,Gato&localidad=Suba,Chapinero&urgencia=Alta,Media
     """
-    try:
-        if estado and estado.strip():  # Verificar que el estado no esté vacío después de quitar espacios
-            # Normalizar el estado: primera letra mayúscula, resto minúscula
-            estado_normalizado = estado.title()
-            
-            if estado_normalizado not in ESTADOS_PERMITIDOS:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Estado inválido. Los estados válidos son: {', '.join(ESTADOS_PERMITIDOS)}"
-                )
-            estado = estado_normalizado
-        else:
-            estado = None  # Si el estado está vacío, establecerlo como None
+    # Validar parámetros de filtro
+    error_details = []
+    
+    if estado and estado.strip():  # Verificar que el estado no esté vacío después de quitar espacios
+        # Normalizar el estado: primera letra mayúscula, resto minúscula
+        estado_normalizado = estado.title()
         
-        solicitudes = await SolicitudMongoModel.filter_solicitudes_by_status(
-            estado=estado,
-            especie=especie,
-            tipo_sangre=tipo_sangre,
-            urgencia=urgencia,
-            localidad=localidad
-        )
-        return solicitudes
-    except HTTPException:
-        raise
-    except Exception as e:
+        if estado_normalizado not in ESTADOS_PERMITIDOS:
+            error_details.append(f"estado: Estado inválido. Los estados válidos son: {', '.join(ESTADOS_PERMITIDOS)}")
+        else:
+            estado = estado_normalizado
+    else:
+        estado = None  # Si el estado está vacío, establecerlo como None
+    
+    # Si hay errores de validación, devolver error 422
+    if error_details:
         raise HTTPException(
-            status_code=500,
-            detail="Error interno del servidor al procesar la solicitud"
+            status_code=422,
+            detail={
+                "message": "Error de validación en los parámetros de filtro",
+                "errors": error_details
+            }
         )
+    
+    solicitudes = await SolicitudMongoModel.filter_solicitudes_by_owner_and_status(
+        owner_id=current_user.id,
+        estado=estado,
+        especie=especie,
+        tipo_sangre=tipo_sangre,
+        urgencia=urgencia,
+        localidad=localidad
+    )
+    return solicitudes
 
 @router.get(
     "/{solicitud_id}",
     response_model=Solicitud,
-    summary="Obtener una solicitud específica (Veterinaria)",
-    description="Retorna una solicitud específica por su ID. Endpoint exclusivo para veterinarias.",
+    summary="Obtener una de mis solicitudes específica (Veterinaria)",
+    description="Retorna una solicitud específica por su ID que pertenece al usuario autenticado. Endpoint exclusivo para veterinarias.",
     responses={
         200: {
             "description": "Solicitud encontrada",
@@ -256,7 +253,7 @@ async def get_solicitud_by_id(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user_clinic)]
 ):
     """
-    Obtiene una solicitud específica por su ID.
+    Obtiene una solicitud específica por su ID que pertenece al usuario autenticado.
     Endpoint exclusivo para veterinarias.
     
     Args:
@@ -266,20 +263,12 @@ async def get_solicitud_by_id(
         Solicitud: Solicitud encontrada
         
     Raises:
-        HTTPException: Si la solicitud no existe o ocurre un error
+        HTTPException: Si la solicitud no existe, no pertenece al usuario o ocurre un error
     """
-    try:
-        solicitud = await SolicitudMongoModel.get_solicitud_by_id(solicitud_id)
-        if not solicitud:
-            raise HTTPException(
-                status_code=404,
-                detail="Solicitud no encontrada"
-            )
-        return solicitud
-    except HTTPException:
-        raise
-    except Exception as e:
+    solicitud = await SolicitudMongoModel.get_solicitud_by_id_and_owner(solicitud_id, current_user.id)
+    if not solicitud:
         raise HTTPException(
-            status_code=500,
-            detail="Error interno del servidor al procesar la solicitud"
-        ) 
+            status_code=404,
+            detail="Solicitud no encontrada"
+        )
+    return solicitud 

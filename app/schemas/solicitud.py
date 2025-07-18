@@ -26,6 +26,7 @@ class Solicitud(BaseModel):
     estado: str
     fecha_creacion: datetime
     foto_mascota: Optional[str] = None
+    ownerId: Optional[str] = Field(None, description="ID del usuario que creó la solicitud")
 
     @field_validator('especie')
     @classmethod
@@ -82,7 +83,8 @@ class Solicitud(BaseModel):
                 "fecha_creacion": "2025-06-12T18:32:00.000000",
                 "urgencia": "Alta",
                 "estado": "Completada",
-                "foto_mascota": "https://ejemplo.com/foto-canela.jpg"
+                "foto_mascota": "https://ejemplo.com/foto-canela.jpg",
+                "ownerId": "user_123"
             }
         }
     )

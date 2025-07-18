@@ -32,8 +32,16 @@ class Settings(BaseSettings):
     PORT: int = 8000
     BASE_URL: str = "http://127.0.0.1:8000"
     
-    # CORS
-    BACKEND_CORS_ORIGINS: List[str] = ["*"]
+    # CORS - Configuración más específica para desarrollo
+    BACKEND_CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:8000", 
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "*"  # Permitir todos los orígenes en desarrollo
+    ]
 
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod

@@ -168,6 +168,50 @@ class SolicitudMongoModel:
         return Solicitud(**converted_doc)
 
     @staticmethod
+    async def create_solicitud_with_owner(solicitud_data: Dict, owner_id: str) -> Solicitud:
+        """
+        Create a new solicitation in MongoDB with owner association
+        Args:
+            solicitud_data (Dict): Solicitation data
+            owner_id (str): ID of the user creating the solicitation
+        Returns:
+            Solicitud: Created solicitation
+        """
+        collection = SolicitudMongoModel.get_collection()
+        
+        # Agregar campos por defecto si no están presentes
+        from datetime import datetime
+        
+        # Crear una copia para no modificar el original
+        data_to_insert = solicitud_data.copy()
+        
+        # Agregar owner_id al documento
+        data_to_insert["ownerId"] = owner_id
+        
+        # Agregar estado por defecto si no está presente
+        if "estado" not in data_to_insert:
+            data_to_insert["estado"] = "Activa"
+        
+        # Agregar fecha de creación si no está presente
+        if "fecha_creacion" not in data_to_insert:
+            data_to_insert["fecha_creacion"] = datetime.now()
+        
+        # Convertir string ID a ObjectId si es necesario
+        if "id" in data_to_insert and isinstance(data_to_insert["id"], str):
+            data_to_insert["_id"] = ObjectId(data_to_insert["id"])
+            del data_to_insert["id"]
+        
+        result = await collection.insert_one(data_to_insert)
+        
+        # Obtener el documento insertado
+        inserted_doc = await collection.find_one({"_id": result.inserted_id})
+        
+        # Convertir ObjectId a string para el esquema
+        converted_doc = SolicitudMongoModel._convert_mongo_doc_to_schema(inserted_doc)
+        
+        return Solicitud(**converted_doc)
+
+    @staticmethod
     async def delete_solicitud(solicitud_id: str) -> bool:
         """
         Delete a solicitation by ID from MongoDB
@@ -389,4 +433,115 @@ class SolicitudMongoModel:
             
         except Exception as e:
             print(f"❌ Error durante la migración: {e}")
-            # No lanzar excepción para evitar que falle el startup 
+            # No lanzar excepción para evitar que falle el startup
+
+    @staticmethod
+    async def get_solicitudes_by_owner(owner_id: str) -> List[Solicitud]:
+        """
+        Get all solicitations created by a specific owner from MongoDB
+        Args:
+            owner_id (str): ID of the owner
+        Returns:
+            List[Solicitud]: List of solicitations created by the owner
+        """
+        collection = SolicitudMongoModel.get_collection()
+        cursor = collection.find({"ownerId": owner_id})
+        solicitudes = await cursor.to_list(length=None)
+        return [Solicitud(**SolicitudMongoModel._convert_mongo_doc_to_schema(solicitud)) for solicitud in solicitudes]
+
+    @staticmethod
+    async def filter_solicitudes_by_owner_and_status(
+        owner_id: str,
+        estado: Optional[str] = None,
+        especie: Optional[str] = None,
+        tipo_sangre: Optional[str] = None,
+        urgencia: Optional[str] = None,
+        localidad: Optional[str] = None
+    ) -> List[Solicitud]:
+        """
+        Filter solicitations by owner and multiple parameters from MongoDB
+        Args:
+            owner_id (str): ID of the owner
+            estado (Optional[str]): Status to filter by
+            especie (Optional[str]): Especie to filter by (can be comma-separated values)
+            tipo_sangre (Optional[str]): Tipo de sangre to filter by (can be comma-separated values)
+            urgencia (Optional[str]): Urgencia to filter by (can be comma-separated values)
+            localidad (Optional[str]): Localidad to filter by (can be comma-separated values)
+        Returns:
+            List[Solicitud]: List of solicitations matching all provided filters
+        """
+        collection = SolicitudMongoModel.get_collection()
+        
+        # Construir filtro base con ownerId
+        filter_query = {"ownerId": owner_id}
+        
+        def build_regex_filter(value: str) -> dict:
+            """Build regex filter for multiple values separated by commas"""
+            if not value:
+                return None
+            
+            # Split by comma and clean whitespace
+            values = [v.strip() for v in value.split(',') if v.strip()]
+            if not values:
+                return None
+            
+            if len(values) == 1:
+                # Single value - use exact match with case insensitive
+                return {"$regex": f"^{values[0]}$", "$options": "i"}
+            else:
+                # Multiple values - use OR condition
+                return {"$in": values}
+        
+        if estado:
+            estado_filter = build_regex_filter(estado)
+            if estado_filter:
+                filter_query["estado"] = estado_filter
+                
+        if especie:
+            especie_filter = build_regex_filter(especie)
+            if especie_filter:
+                filter_query["especie"] = especie_filter
+                
+        if tipo_sangre:
+            tipo_sangre_filter = build_regex_filter(tipo_sangre)
+            if tipo_sangre_filter:
+                filter_query["tipo_sangre"] = tipo_sangre_filter
+                
+        if urgencia:
+            urgencia_filter = build_regex_filter(urgencia)
+            if urgencia_filter:
+                filter_query["urgencia"] = urgencia_filter
+                
+        if localidad:
+            localidad_filter = build_regex_filter(localidad)
+            if localidad_filter:
+                filter_query["localidad"] = localidad_filter
+        
+        cursor = collection.find(filter_query)
+        solicitudes = await cursor.to_list(length=None)
+        return [Solicitud(**SolicitudMongoModel._convert_mongo_doc_to_schema(solicitud)) for solicitud in solicitudes]
+
+    @staticmethod
+    async def get_solicitud_by_id_and_owner(solicitud_id: str, owner_id: str) -> Optional[Solicitud]:
+        """
+        Get a solicitation by ID and owner from MongoDB
+        Args:
+            solicitud_id (str): ID of the solicitation
+            owner_id (str): ID of the owner
+        Returns:
+            Optional[Solicitud]: Solicitation if found and belongs to owner, None otherwise
+        """
+        collection = SolicitudMongoModel.get_collection()
+        
+        try:
+            object_id = ObjectId(solicitud_id)
+            solicitud = await collection.find_one({"_id": object_id, "ownerId": owner_id})
+            
+            if solicitud:
+                # Convertir ObjectId a string para el esquema
+                converted_doc = SolicitudMongoModel._convert_mongo_doc_to_schema(solicitud)
+                return Solicitud(**converted_doc)
+            
+            return None
+        except Exception:
+            return None 
